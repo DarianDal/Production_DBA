@@ -1,0 +1,17 @@
+--displays point in time server sessions and connection details (useful for migrations because it can tell you source IPs)
+USE MASTER
+SELECT
+    s.session_id,
+	d.name,
+    s.login_name,
+    s.host_name,
+    s.program_name,
+    s.client_interface_name,
+    s.login_time,
+    c.client_net_address,
+    c.local_net_address,
+    c.connect_time
+FROM sys.dm_exec_sessions AS s
+JOIN sys.dm_exec_connections AS c ON s.session_id = c.session_id
+JOIN sys.databases AS d ON s.database_id = d.database_id
+where d.name like '%%'
