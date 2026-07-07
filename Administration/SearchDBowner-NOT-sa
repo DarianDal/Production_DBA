@@ -1,0 +1,47 @@
+--Search a server for databases where the db owner is not sa
+SELECT name, suser_sname(owner_sid) AS owner
+FROM sys.databases
+WHERE name NOT IN ('master','model','msdb','tempdb')
+AND suser_sname(owner_sid) <> 'sa'
+ORDER BY name
+/***AND***/
+IF OBJECT_ID(N'tempdb..#owners', 'U') IS NOT NULL
+      DROP TABLE #owners;
+CREATE TABLE #owners
+(
+      database_name sysname NOT NULL,
+      sys_databases_sid varbinary(85) NOT NULL,
+      sys_databases_owner nvarchar(256) NULL,
+      sys_users_sid varbinary(85) NULL,
+      sys_users_owner nvarchar(256) NULL
+);
+INSERT INTO #owners
+      (
+            database_name, 
+            sys_databases_sid, 
+            sys_databases_owner
+      )
+      SELECT
+            name, 
+            owner_sid, 
+            SUSER_SNAME(owner_sid)
+      FROM sys.databases;
+EXEC sp_MSforeachdb '
+      UPDATE #owners
+      SET sys_users_sid = (
+                  SELECT sid 
+                  FROM [?].sys.database_principals 
+                  WHERE name = ''dbo''),
+            sys_users_owner = (
+                  SELECT SUSER_SNAME(sid) 
+                  FROM [?].sys.database_principals 
+                  WHERE name = ''dbo'')
+      WHERE database_name = ''?''
+      ';
+SELECT * FROM #owners
+WHERE
+      sys_databases_sid <> sys_users_sid
+      OR sys_databases_owner IS NULL;
+IF OBJECT_ID(N'tempdb..#owners', 'U') IS NOT NULL
+      DROP TABLE #owners;
+GO
