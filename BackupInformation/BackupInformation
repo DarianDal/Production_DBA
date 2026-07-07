@@ -1,0 +1,37 @@
+/*Improved Query that combines both of the above, modify the WHERE clause to change from past 7 days to the time frame you need*/
+SELECT
+    database_name,
+    user_name,
+    server_name,
+	backup_set_id,
+	backupset.name,
+	CASE msdb..backupset.type
+         WHEN 'D' THEN 'D-Full'
+         WHEN 'I' THEN 'I-Diff'
+         WHEN 'L' THEN 'L-Log'
+    END AS [Backup Type],
+    backup_start_date,
+    backup_finish_date,
+	DATEDIFF (SECOND, msdb.dbo.backupset.backup_start_date, msdb.dbo.backupset.backup_finish_date) 'Backup Elapsed Time (sec)',
+	backup_size,
+	(compressed_backup_size/1024/1024/1024) AS 'Compress Backup Size in GB',
+	(compressed_backup_size/1024/1024) AS 'Compress Backup Size in MB',
+	compressed_backup_size AS 'Compressed Back Size in KB',
+	CONVERT (NUMERIC(20,3), (CONVERT (FLOAT, backup_size) /CONVERT (FLOAT, compressed_backup_size))) 'Compression Ratio',
+    msdb..backupset.is_snapshot,
+    physical_device_name,
+    CASE device_type
+         WHEN 2 THEN 'Disk'
+         WHEN 5 THEN 'Tape'
+         WHEN 7 THEN 'Virtual Device'
+         WHEN 9 THEN 'Azure Storage'
+    END AS [Device Type]
+FROM msdb.dbo.backupmediafamily
+INNER JOIN msdb.dbo.backupset
+ON msdb.dbo.backupmediafamily.media_set_id = msdb.dbo.backupset.media_set_id
+WHERE (CONVERT(datetime, backup_start_date, 102) >= GETDATE() - 7) --default is last 7 days
+And database_name = '[ENTER DATABASE NAME HERE]'
+--And msdb..backupset.type = 'D'
+ORDER BY 
+database_name,
+backup_start_date DESC
