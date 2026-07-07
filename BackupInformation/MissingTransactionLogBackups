@@ -1,0 +1,14 @@
+----------------------------------------------------------------------------------------------------------------
+--	Find all databases on an instance that have not had a transaction log backup in the past hour
+--  For all databases that are not system databases (database_id >4), are not offline (state = 6)
+--  and are not read only (is_read_only = 1)
+----------------------------------------------------------------------------------------------------------------
+SELECT name
+FROM sys.databases
+WHERE name NOT IN (
+   SELECT database_name
+   FROM msdb..backupset
+   WHERE type = 'L'
+   GROUP BY database_name
+   HAVING max(backup_start_date) > DATEADD(HOUR, -1, GETDATE())) --default is 1 hour
+and database_id > 4 and state <> 6 and is_read_only = 0
