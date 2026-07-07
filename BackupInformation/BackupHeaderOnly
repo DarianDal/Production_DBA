@@ -1,0 +1,7 @@
+----------------------------------------------------------------------------------------------------------------
+--	RESTORE HEADERONLY option allows you to see the backup header information for all backups for a 
+--  particular backup device
+----------------------------------------------------------------------------------------------------------------
+
+RESTORE HEADERONLY FROM DISK = [BackupAddress]
+GO
