@@ -1,0 +1,8 @@
+--A query that can be ran against master to display all of the server databases' compatibility levels
+--this particular where clause is excluding SQL Server 2019(150)
+USE MASTER
+SELECT name, cmptlevel FROM master..sysdatabases
+WHERE 
+name NOT IN ('master', 'tempdb', 'model', 'msdb')
+--WHERE cmptlevel <> 150;
+order by cmptlevel
