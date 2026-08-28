@@ -1,0 +1,232 @@
+USE [msdb]
+GO
+
+/****** Object:  Job [SQL Server Database Backup Age Check] ******/
+BEGIN TRANSACTION
+DECLARE @ReturnCode INT
+SELECT @ReturnCode = 0
+/****** Object:  JobCategory [[Uncategorized (Local)]] ******/
+IF NOT EXISTS (SELECT name FROM msdb.dbo.syscategories WHERE name=N'[Uncategorized (Local)]' AND category_class=1)
+BEGIN
+EXEC @ReturnCode = msdb.dbo.sp_add_category @class=N'JOB', @type=N'LOCAL', @name=N'[Uncategorized (Local)]'
+IF (@@ERROR <> 0 OR @ReturnCode <> 0) GOTO QuitWithRollback
+
+END
+
+DECLARE @jobId BINARY(16)
+EXEC @ReturnCode =  msdb.dbo.sp_add_job @job_name=N'SQL Server Database Backup Age Check', 
+		@enabled=1, 
+		@notify_level_eventlog=0, 
+		@notify_level_email=2, 
+		@notify_level_netsend=0, 
+		@notify_level_page=0, 
+		@delete_level=0, 
+		@description=N'This process checks the full backups on the server to determine if any do not have a full backup in the last 8 days.', 
+		@category_name=N'[Uncategorized (Local)]', 
+		@owner_login_name=N'sa', 
+		@notify_email_operator_name=N'SQL DBA Oncall', @job_id = @jobId OUTPUT
+IF (@@ERROR <> 0 OR @ReturnCode <> 0) GOTO QuitWithRollback
+/****** Object:  Step [Daily Backup Verification] ******/
+EXEC @ReturnCode = msdb.dbo.sp_add_jobstep @job_id=@jobId, @step_name=N'Daily Backup Verification', 
+		@step_id=1, 
+		@cmdexec_success_code=0, 
+		@on_success_action=1, 
+		@on_success_step_id=0, 
+		@on_fail_action=2, 
+		@on_fail_step_id=0, 
+		@retry_attempts=0, 
+		@retry_interval=0, 
+		@os_run_priority=0, @subsystem=N'TSQL', 
+		@command=N'SET quoted_identifier ON
+
+DECLARE @DatabaseCount int,
+        @RecentFailover int,
+        @FileName NVARCHAR(4000),
+		@Email int
+ 
+
+SET @DatabaseCount = (select count(*) FROM sys.databases 
+ where Name in(SELECT sdb.Name 
+                 FROM sys.databases sdb LEFT OUTER JOIN msdb.dbo.backupset bus ON bus.database_name = sdb.name 
+				WHERE bus.type = ''D'' 
+				  and sdb.state <> 6 
+				 GROUP BY sdb.Name HAVING (MAX(bus.backup_finish_date) < DATEADD(hh, - 192, GETDATE())))
+   and Name not in (SELECT DISTINCT dbcs.database_name AS [DatabaseName]
+					  FROM master.sys.availability_groups AS AG 
+					  LEFT OUTER JOIN master.sys.dm_hadr_availability_group_states as agstates ON AG.group_id = agstates.group_id
+                      INNER JOIN master.sys.availability_replicas AS AR ON AG.group_id = AR.group_id
+                      INNER JOIN master.sys.dm_hadr_availability_replica_states AS arstates ON AR.replica_id = arstates.replica_id AND arstates.is_local = 1
+                      INNER JOIN master.sys.dm_hadr_database_replica_cluster_states AS dbcs ON arstates.replica_id = dbcs.replica_id
+                      LEFT OUTER JOIN master.sys.dm_hadr_database_replica_states AS dbrs ON dbcs.replica_id = dbrs.replica_id AND dbcs.group_database_id = dbrs.group_database_id
+                     WHERE ISNULL(arstates.role, 3) = 2 AND ISNULL(dbcs.is_database_joined, 0) = 1))
+
+IF @DatabaseCount > 0 
+BEGIN
+
+	SELECT @FileName = target_data.value(''(EventFileTarget/File/@name)[1]'',''nvarchar(4000)'')
+	FROM (
+	SELECT
+	CAST(target_data AS XML) target_data
+	FROM sys.dm_xe_sessions s
+	JOIN sys.dm_xe_session_targets t
+	ON s.address = t.event_session_address
+	WHERE s.name = N''AlwaysOn_health''
+	) ft
+
+	SELECT 
+	XEData.value(''(event/@timestamp)[1]'',''datetime2(3)'') AS event_timestamp,
+	XEData.value(''(event/data[@name="previous_state"]/text)[1]'', ''varchar(255)'') AS previous_state,
+	XEData.value(''(event/data[@name="current_state"]/text)[1]'', ''varchar(255)'') AS current_state,
+	XEData.value(''(event/data[@name="availability_replica_name"]/value)[1]'', ''varchar(255)'') AS availability_replica_name,
+	XEData.value(''(event/data[@name="availability_group_name"]/value)[1]'', ''varchar(255)'') AS availability_group_name
+	INTO #Temp FROM (
+	SELECT CAST(event_data AS XML) XEData, *
+	FROM sys.fn_xe_file_target_read_file(@FileName, NULL, NULL, NULL)
+	WHERE object_name = ''availability_replica_state_change''
+	) event_data
+	WHERE XEData.value(''(event/data[@name="current_state"]/text)[1]'', ''varchar(255)'') = ''PRIMARY_NORMAL''
+	ORDER BY event_timestamp DESC;				
+
+
+	SET @RecentFailover = (SELECT COUNT(*) from #temp
+	where event_timestamp >= (DATEADD(hh, - 192, GETDATE())))
+
+
+	CREATE TABLE #MissedBackups 
+	( 
+	[Database Name][varchar](128),
+	[Last Backup date][char](10)
+	) 
+
+	IF @RecentFailover = 0
+	BEGIN 
+		INSERT INTO #MissedBackups
+		SELECT sdb.Name, COALESCE(CONVERT(VARCHAR(12), MAX(bus.backup_finish_date), 101),''-'')
+		  FROM sys.databases sdb LEFT OUTER JOIN msdb.dbo.backupset bus ON bus.database_name = sdb.name
+		 WHERE bus.type = ''D''
+		   AND sdb.state <> 6 
+		   AND sdb.name not in (SELECT DISTINCT dbcs.database_name AS [DatabaseName]
+				                  FROM master.sys.availability_groups AS AG 
+									LEFT OUTER JOIN master.sys.dm_hadr_availability_group_states as agstates ON AG.group_id = agstates.group_id
+									INNER JOIN master.sys.availability_replicas AS AR ON AG.group_id = AR.group_id
+									INNER JOIN master.sys.dm_hadr_availability_replica_states AS arstates ON AR.replica_id = arstates.replica_id AND arstates.is_local = 1
+									INNER JOIN master.sys.dm_hadr_database_replica_cluster_states AS dbcs ON arstates.replica_id = dbcs.replica_id
+									LEFT OUTER JOIN master.sys.dm_hadr_database_replica_states AS dbrs ON dbcs.replica_id = dbrs.replica_id AND dbcs.group_database_id = dbrs.group_database_id
+								  WHERE ISNULL(arstates.role, 3) = 2 AND ISNULL(dbcs.is_database_joined, 0) = 1)
+		  GROUP BY sdb.Name
+		HAVING (MAX(bus.backup_finish_date) <= DATEADD(hh, - 192, GETDATE())) 
+		UNION
+		SELECT sdb.NAME, sdb.state_desc   
+		  FROM  sys.databases sdb LEFT JOIN msdb.dbo.backupset bus ON sdb.name  = bus.database_name 
+		 WHERE bus.database_name IS NULL 
+	       AND sdb.name not in (SELECT DISTINCT dbcs.database_name AS [DatabaseName]
+	                              FROM master.sys.availability_groups AS AG 
+	           					     LEFT OUTER JOIN master.sys.dm_hadr_availability_group_states as agstates ON AG.group_id = agstates.group_id
+									 INNER JOIN master.sys.availability_replicas AS AR ON AG.group_id = AR.group_id
+									 INNER JOIN master.sys.dm_hadr_availability_replica_states AS arstates ON AR.replica_id = arstates.replica_id AND arstates.is_local = 1
+									 INNER JOIN master.sys.dm_hadr_database_replica_cluster_states AS dbcs ON arstates.replica_id = dbcs.replica_id
+									 LEFT OUTER JOIN master.sys.dm_hadr_database_replica_states AS dbrs ON dbcs.replica_id = dbrs.replica_id AND dbcs.group_database_id = dbrs.group_database_id
+								  WHERE ISNULL(arstates.role, 3) = 2 AND ISNULL(dbcs.is_database_joined, 0) = 1)
+		AND sdb.name <> ''tempdb''
+	END
+	ELSE
+	BEGIN
+		INSERT INTO #MissedBackups
+		SELECT sdb.Name, COALESCE(CONVERT(VARCHAR(12), MAX(bus.backup_finish_date), 101),''-'')
+		  FROM sys.databases sdb LEFT OUTER JOIN msdb.dbo.backupset bus ON bus.database_name = sdb.name
+		 WHERE  bus.type = ''D''
+		   AND sdb.state <> 6 
+		   AND sdb.database_id in (1,2,3,4)
+		   AND sdb.name not in (SELECT DISTINCT dbcs.database_name AS [DatabaseName]
+			                      FROM master.sys.availability_groups AS AG 
+									LEFT OUTER JOIN master.sys.dm_hadr_availability_group_states as agstates ON AG.group_id = agstates.group_id
+		                            INNER JOIN master.sys.availability_replicas AS AR ON AG.group_id = AR.group_id
+				                    INNER JOIN master.sys.dm_hadr_availability_replica_states AS arstates ON AR.replica_id = arstates.replica_id AND arstates.is_local = 1
+									INNER JOIN master.sys.dm_hadr_database_replica_cluster_states AS dbcs ON arstates.replica_id = dbcs.replica_id
+								    LEFT OUTER JOIN master.sys.dm_hadr_database_replica_states AS dbrs ON dbcs.replica_id = dbrs.replica_id AND dbcs.group_database_id = dbrs.group_database_id
+								 WHERE ISNULL(arstates.role, 3) = 2 AND ISNULL(dbcs.is_database_joined, 0) = 1)
+	     GROUP BY sdb.Name
+         HAVING (MAX(bus.backup_finish_date) <= DATEADD(hh, - 192, GETDATE())) 
+         UNION
+		 SELECT sdb.NAME, sdb.state_desc   
+           FROM  sys.databases sdb LEFT JOIN msdb.dbo.backupset bus ON sdb.name  = bus.database_name 
+          WHERE bus.database_name IS NULL 
+            AND sdb.name not in (SELECT DISTINCT dbcs.database_name AS [DatabaseName]
+	                               FROM master.sys.availability_groups AS AG 
+	           					     LEFT OUTER JOIN master.sys.dm_hadr_availability_group_states as agstates ON AG.group_id = agstates.group_id
+									 INNER JOIN master.sys.availability_replicas AS AR ON AG.group_id = AR.group_id
+									 INNER JOIN master.sys.dm_hadr_availability_replica_states AS arstates ON AR.replica_id = arstates.replica_id AND arstates.is_local = 1
+									 INNER JOIN master.sys.dm_hadr_database_replica_cluster_states AS dbcs ON arstates.replica_id = dbcs.replica_id
+									 LEFT OUTER JOIN master.sys.dm_hadr_database_replica_states AS dbrs ON dbcs.replica_id = dbrs.replica_id AND dbcs.group_database_id = dbrs.group_database_id
+							      WHERE ISNULL(arstates.role, 3) = 2 AND ISNULL(dbcs.is_database_joined, 0) = 1)
+	       AND sdb.name <> ''tempdb''
+	END
+  
+	SET @EMAIL = (SELECT COUNT(*) FROM #MissedBackups)
+
+	IF @EMAIL > 0
+    BEGIN
+		DECLARE @xml NVARCHAR(MAX)
+		DECLARE @body NVARCHAR(MAX)
+		DECLARE @Subject VARCHAR(100)
+
+		SET @subject = ''SQL Server '' + @@SERVERNAME + '' has databases without a full Backup in the Last 7 Days.''
+
+		SET @xml = CAST(( SELECT [Database Name] AS ''td'','''',[Last Backup Date] AS ''td''
+		FROM  #MissedBackups ORDER BY [Database Name]
+		FOR XML PATH(''tr''), ELEMENTS ) AS NVARCHAR(MAX))
+	
+		SET @body =''<html><body><H3>Missing Database Backups</H3>
+		<table border = 1> 
+		<tr>
+		<th> Database Name </th> <th> Last Backup Date </th></tr>''    
+ 
+		SET @body = @body + @xml +''</table></body></html>''
+
+		EXEC msdb.dbo.sp_send_dbmail
+			@profile_name = ''SQL Mail Profile'',
+			@body = @body,
+			@body_format = ''HTML'',
+			@recipients =  '''',
+			@importance = ''high'',
+			@subject = @subject  
+	END
+ 
+	DROP TABLE #MissedBackups  
+	DROP TABLE #Temp
+
+END
+', 
+		@database_name=N'master', 
+		@flags=0
+IF (@@ERROR <> 0 OR @ReturnCode <> 0) GOTO QuitWithRollback
+EXEC @ReturnCode = msdb.dbo.sp_update_job @job_id = @jobId, @start_step_id = 1
+IF (@@ERROR <> 0 OR @ReturnCode <> 0) GOTO QuitWithRollback
+EXEC @ReturnCode = msdb.dbo.sp_add_jobschedule @job_id=@jobId, @name=N'Daily Backup Check', 
+		@enabled=1, 
+		@freq_type=4, 
+		@freq_interval=1, 
+		@freq_subday_type=1, 
+		@freq_subday_interval=0, 
+		@freq_relative_interval=0, 
+		@freq_recurrence_factor=0, 
+		@active_start_date=20170803, 
+		@active_end_date=99991231, 
+		@active_start_time=60000, 
+		@active_end_time=235959, 
+		@schedule_uid=N'713bcef9-9935-44e4-bb1a-be22909d1c18'
+IF (@@ERROR <> 0 OR @ReturnCode <> 0) GOTO QuitWithRollback
+EXEC @ReturnCode = msdb.dbo.sp_add_jobserver @job_id = @jobId, @server_name = N'(local)'
+IF (@@ERROR <> 0 OR @ReturnCode <> 0) GOTO QuitWithRollback
+COMMIT TRANSACTION
+GOTO EndSave
+QuitWithRollback:
+    IF (@@TRANCOUNT > 0) ROLLBACK TRANSACTION
+EndSave:
+GO
+
+
+
+
+USE [msdb]
+GO
