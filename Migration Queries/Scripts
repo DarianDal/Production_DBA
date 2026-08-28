@@ -1,0 +1,318 @@
+/**
+1. Service Master Key
+2. List Certificate created to protect the Encyption
+3. Full text Indexing check-returns single row
+4. Checks if Service Broker is enabled
+5. Lists Trustworthy settings
+6. Full text Indexing check--returns row for each database
+7. Filestream check-returns row for each database with filestream 
+8. Filestream check-returns row for each table in a database with Filestream
+9. Lists VLF information for all databases
+10. Lists linked server information
+11. Lists trigger information for a database - distinct from 12
+12. Lists trigger information for a database - distinct from 11
+13. Lists master key encryption keys at the database level
+14. Lists a server's certificates
+15. Checks the server for orphan users
+16. Creates a script for moving users to another server
+17. Lists triggers and their DDL definitions
+18. 
+19. Returns a SID for a specified user
+20. Full server object search 
+21. Full server job search
+22. Lists VLF counts for all databases on a server
+23. VLF count with information on each VLF
+24. Query that lists a snapshot of active connections to the specified database
+25. This script will write a copy only backup with overwrite to a specified backup path and append today's date and time to it.
+**/
+
+
+
+--1. To list the Service Master Key (which is created during the instance creation)
+USE master
+GO
+SELECT *
+FROM sys.symmetric_keys
+--WHERE name = '##MS_ServiceMasterKey##';
+
+--2. To list a CERTIFICATE created to protect the ENCRYPTION
+USE master
+Select * from sys.certificates
+
+-- 3. server and database is full text enabled 
+
+SELECT SERVERPROPERTY('IsFullTextInstalled') AS IsFullTextInstalled,
+DatabaseProperty(DB_NAME(DB_ID()), 'IsFulltextEnabled') AS IsFulltextEnabled
+
+--4. Run on MASTER to see if any databases has service broker enabled
+USE MASTER
+SELECT name, database_id, is_broker_enabled
+FROM sys.databases
+order by name
+
+--5. Run this against MASTER to list Trustworthy setting for each DB
+USE MASTER
+SELECT name,
+trustworthy_setting = CASE is_trustworthy_on
+WHEN 1 THEN 'Trustworthy setting is ON for msdb'
+ELSE 'Trustworthy setting is OFF for msdb'
+END
+FROM sys.databases
+order by name
+
+--6. check full text for each database:
+SELECT name, is_fulltext_enabled
+FROM sys.databases
+order by name
+
+use [SourceDatabaseName]
+execute sp_help_fulltext_tables 
+
+--7. Which database and files use FILESTREAM 
+SELECT db_name(database_id) dbname
+    , name AS file_name
+    , physical_name
+    , type_desc
+    , *
+FROM sys.master_files
+WHERE type_desc = 'FILESTREAM';
+
+--8. Which tables in the database have FILESTREAM enabled
+USE [SourceDatabaseName]
+GO
+
+SELECT *
+FROM sys.tables
+WHERE filestream_data_space_id IS NOT NULL;
+
+--9. vlf
+SELECT [name], s.database_id,
+COUNT(l.database_id) AS 'VLF Count',
+SUM(vlf_size_mb) AS 'VLF Size (MB)',
+SUM(CAST(vlf_active AS INT)) AS 'Active VLF',
+SUM(vlf_active*vlf_size_mb) AS 'Active VLF Size (MB)',
+COUNT(l.database_id)-SUM(CAST(vlf_active AS INT)) AS 'In-active VLF',
+SUM(vlf_size_mb)-SUM(vlf_active*vlf_size_mb) AS 'In-active VLF Size (MB)'
+FROM sys.databases s
+CROSS APPLY sys.dm_db_log_info(s.database_id) l
+GROUP BY [name], s.database_id
+ORDER BY [name]
+GO
+
+
+--10. Run this against MASTER to gather details on linked server
+USE MASTER
+SELECT *
+FROM sys.Servers a
+LEFT OUTER JOIN sys.linked_logins b ON b.server_id = a.server_id
+LEFT OUTER JOIN sys.server_principals c ON c.principal_id = b.local_principal_id
+WHERE a.name like '%[SourceDatabaseName]%'
+order by a.provider
+/*************************/
+SELECT a.name, product, provider, data_source, catalog, a.modify_date AS server_modify_date, remote_name, b.modify_date AS remote_login_modify_date
+FROM sys.Servers a
+LEFT OUTER JOIN sys.linked_logins b ON b.server_id = a.server_id
+LEFT OUTER JOIN sys.server_principals c ON c.principal_id = b.local_principal_id
+
+
+--11. find TRIGGERS
+USE [SourceDatabaseName];   
+GO  
+SELECT  name, object_id, schema_id, parent_object_id, type_desc, create_date, modify_date, is_published  
+FROM sys.objects  
+WHERE type = 'TR';   
+GO  
+
+--12. or
+USE [SourceDatabaseName]
+GO
+
+SELECT trigger_name = SO.name, trigger_owner = USER_NAME(SO.uid), table_name = OBJECT_NAME(SO.parent_obj),
+isupdate = OBJECTPROPERTY( id, 'ExecIsUpdateTrigger'), isdelete = OBJECTPROPERTY( id, 'ExecIsDeleteTrigger'),
+isinsert = OBJECTPROPERTY( id, 'ExecIsInsertTrigger'), isafter = OBJECTPROPERTY( id, 'ExecIsAfterTrigger'),
+isinsteadof = OBJECTPROPERTY( id, 'ExecIsInsteadOfTrigger'),
+[disabled] = OBJECTPROPERTY(id, 'ExecIsTriggerDisabled')
+FROM sysobjects SO INNER JOIN sysusers ON SO.uid = sysusers.uid
+WHERE type = 'TR'
+
+--13. To list the master key encryption key created AT THE DATABASE LEVEL
+USE [SourceDatabaseName]
+GO
+SELECT *
+FROM sys.symmetric_keys
+
+--14. for encryption certificate:
+Select * from sys.certificates
+
+
+--15. backup script to use on day of migration
+BACKUP DATABASE [DATABASE NAME] TO DISK = N'\\Destination\.bak' WITH COPY_ONLY, STATS = 10 
+
+--15. CHECK FOR ORPHANS
+Use [SourceDatabaseName] ;
+GO
+exec sp_change_users_login @Action='Report' ;
+GO
+
+USE [SourceDatabaseName];
+GO
+select p.name,p.sid
+from sys.database_principals p
+where p.type in ('G','S','U')
+and p.sid not in (select sid from sys.server_principals)
+and p.name not in (
+    'dbo',
+    'guest',
+    'INFORMATION_SCHEMA',
+    'sys',
+    'MS_DataCollectorInternalUser'
+) ;
+
+--16. move login from one server to another with sp_help_revlogin
+EXEC sp_help_revlogin 'usernamehere'
+
+exec sp_change_users_login 'report'
+exec sp_change_users_login 'Update_one','id','id'
+
+--17. the following lists all the SERVER level TRIGGERS
+USE master;
+GO
+
+SELECT name, OBJECT_DEFINITION ([object_id])
+FROM sys.server_triggers
+-- WHERE name = N'trg_LogonAttempt'
+;
+
+
+--18. ?????
+
+USE master;
+GO
+
+SELECT name, OBJECT_DEFINITION ([object_id])
+FROM sys.server_triggers
+WHERE OBJECT_DEFINITION ([object_id]) like '%Database Availability Group Sync%'
+;
+
+
+--19. finding a sid for a user
+SELECT SUSER_SID('sa');  
+
+
+--20. This query will search for all objects in all databases on the instance 
+/* Use this script to search all objects, in all databases on the server, that  
+are SQL language-defined modules in SQL Server.  These include the following: 
+D    DEFAULT (constraint or stand-alone)
+P    SQL Stored Procedure 
+RF    Replication-filter-procedure 
+V    View 
+TR    SQL DML Trigger 
+FN    SQL scalar function 
+IF    SQL inline table-valued function 
+TF    SQL table-valued function (2012 - 2016) 
+R    Rule (old-style, stand-alone) 
+*/ 
+DECLARE @cmd                varchar(1000), 
+        @search_string        varchar(200) 
+CREATE TABLE #temp( 
+    [Database_Name]        sysname, 
+    [Schema_Name]        sysname, 
+    [Object_Name]        sysname, 
+    [Object_Type]        nvarchar(60)) 
+-- Set the search string 
+SET @search_string = '[SourceDatabaseName]' 
+SET @cmd = 'INSERT INTO #temp SELECT DISTINCT ''?'', s.name AS Schema_Name, o.name AS Object_Name, o.type_desc 
+                 FROM [?].sys.sql_modules m INNER JOIN [?].sys.objects o ON m.object_id = o.object_id  
+                 INNER JOIN [?].sys.schemas s ON o.schema_id = s.schema_id 
+                 WHERE m.definition Like ''%' + @search_string + '%''' 
+ -- Uncomment the following if you have problems with your command and want to see the command 
+PRINT @cmd 
+-- Run for every database on the server 
+EXEC sp_msforeachdb @cmd 
+-- Retrieve your results from the temp table 
+SELECT * 
+FROM #temp 
+ORDER BY [Database_Name], [Object_Name], [Object_Type] 
+-- If you want to omit certain databases from your results, simply add  
+-- the appropriate WHERE clause, as in the following: 
+--SELECT * 
+--FROM #temp 
+--WHERE db NOT IN ('DB1', 'DB4', 'DB7') 
+--ORDER BY db, obj_type, obj_name 
+DROP TABLE #temp 
+
+
+--21. search for jobs with certain text in them 
+use msdb
+go
+select distinct (a.name),*   --,b.step_name,b.command,b.database_name
+from sysjobsteps b
+join sysjobs a on b.job_id=a.job_id 
+where (b.command like '%[SourceDatabaseName]%') 
+or (a.name like '%[SourceDatabaseName]%')
+or (b.database_name like '%[SourceDatabaseName]%')
+order by a.name 
+
+
+--22. server vlf counts
+SELECT [name] AS [Database Name], [VLF Count]
+FROM sys.databases AS db WITH (NOLOCK)
+CROSS APPLY (SELECT file_id, COUNT(*) AS [VLF Count]
+             FROM sys.dm_db_log_info(db.database_id)
+             GROUP BY file_id) AS li
+ORDER BY [VLF Count] DESC OPTION (RECOMPILE);
+
+--23. Database VLF count with information
+USE [SourceDatabaseName]
+DBCC LOGINFO;
+
+--24. Query that lists a snapshot of active connections to the specified database
+SELECT
+    c.session_id,
+    s.login_name,
+    s.host_name,
+    c.client_net_address,
+    c.connect_time, 
+	d.name
+FROM
+    sys.dm_exec_connections AS c
+JOIN
+    sys.dm_exec_sessions AS s ON c.session_id = s.session_id
+JOIN
+	sys.databases AS d ON d.database_id = s.database_id
+WHERE
+	name = '[SourceDatabaseName]';
+
+
+
+--25. This script will write a copy only backup with overwrite to a specified backup path, my personal folder on the share drive in this case, and append today's date and time to it. 
+DECLARE @DatabaseName AS NVARCHAR(128);
+DECLARE @BackupPath AS NVARCHAR(256);
+DECLARE @FileName AS NVARCHAR(256);
+DECLARE @BackupFullPath AS NVARCHAR(512);
+DECLARE @BackupCommand AS NVARCHAR(MAX);
+
+-- Set the database name you want to back up
+SET @DatabaseName = N'[SourceDatabaseName]'; -- Replace 'YourDatabaseName' with your actual database name
+
+-- Set the base path for your backups
+SET @BackupPath = N'\\Destination\'; -- Replace with your desired backup directory
+
+-- Construct the dynamic file name including date and time
+SET @FileName = @DatabaseName + N'_' + 
+                CONVERT(NVARCHAR(8), GETDATE(), 112) + -- YYYYMMDD
+                N'_' + 
+                REPLACE(CONVERT(NVARCHAR(8), GETDATE(), 108), ':', '') + -- HHMMSS
+                N'.bak';
+
+-- Combine the path and file name
+SET @BackupFullPath = @BackupPath + @FileName;
+
+-- Construct the full BACKUP DATABASE command
+SET @BackupCommand = N'BACKUP DATABASE ' + @DatabaseName + N' TO DISK = N''' + @BackupFullPath + N''' WITH COPY_ONLY, NOFORMAT, INIT, NAME = N''' + @DatabaseName + N'-Full Database Backup'', SKIP, NOREWIND, NOUNLOAD, STATS = 10;';
+
+-- Print the command (optional, for verification)
+PRINT @BackupCommand;
+
+-- Execute the backup command
+EXECUTE sp_executesql @BackupCommand;
