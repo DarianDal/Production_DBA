@@ -1,0 +1,11 @@
+--Search agent job output steps for specific strings
+USE msdb
+GO
+
+SELECT sysjobs.name, 
+		sysjobsteps.step_name, 
+		sysjobsteps.output_file_name
+FROM dbo.sysjobsteps 
+JOIN dbo.sysjobs ON sysjobsteps.job_id = sysjobs.job_id
+where output_file_name LIKE (N'%mssql13%')
+order by name
