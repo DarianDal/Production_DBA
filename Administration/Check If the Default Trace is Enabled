@@ -1,0 +1,29 @@
+-- Check if the default trace is enabled
+IF (SELECT CAST(value_in_use AS INT) FROM sys.configurations WHERE name = 'default trace enabled') = 1
+BEGIN
+    -- Query the default trace files for autogrowth events
+    SELECT
+        TE.name AS EventName,
+        T.DatabaseName,
+        T.Filename,
+        (T.IntegerData * 8.0) / 1024 AS GrowthInMB,
+        T.Duration / 1000 AS DurationInSeconds,
+        T.StartTime,
+        T.ApplicationName,
+        T.LoginName
+    FROM
+        sys.fn_trace_gettable(CONVERT(VARCHAR(100),
+            (SELECT path FROM sys.traces WHERE is_default = 1)), DEFAULT) AS T
+    JOIN
+        sys.trace_events AS TE ON T.EventClass = TE.trace_event_id
+    WHERE
+        T.EventClass IN (92, 93) -- EventClass 92: Data File Auto Grow, EventClass 93: Log File Auto Grow
+        AND T.DatabaseID = 2 -- DatabaseID 2 is for tempdb
+    ORDER BY
+        T.StartTime DESC;
+END
+ELSE
+BEGIN
+    PRINT 'Default trace is not enabled. Cannot retrieve autogrowth events from the default trace.';
+END;
+
