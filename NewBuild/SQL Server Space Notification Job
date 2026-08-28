@@ -1,0 +1,169 @@
+/****** Object:  Job [SQL Server Space Notification] ******/
+BEGIN TRANSACTION
+DECLARE @ReturnCode INT
+SELECT @ReturnCode = 0
+/****** Object:  JobCategory [Database Maintenance] ******/
+IF NOT EXISTS (SELECT name FROM msdb.dbo.syscategories WHERE name=N'Database Maintenance' AND category_class=1)
+BEGIN
+EXEC @ReturnCode = msdb.dbo.sp_add_category @class=N'JOB', @type=N'LOCAL', @name=N'Database Maintenance'
+IF (@@ERROR <> 0 OR @ReturnCode <> 0) GOTO QuitWithRollback
+
+END
+
+DECLARE @jobId BINARY(16)
+EXEC @ReturnCode =  msdb.dbo.sp_add_job @job_name=N'SQL Server Space Notification', 
+		@enabled=1, 
+		@notify_level_eventlog=0, 
+		@notify_level_email=2, 
+		@notify_level_netsend=0, 
+		@notify_level_page=0, 
+		@delete_level=0, 
+		@description=N'TSQL that reads the drive allocations on the server and sends an email for any that get below 80% free space.', 
+		@category_name=N'Database Maintenance', 
+		@owner_login_name=N'sa', 
+		@notify_email_operator_name=N'SQL DBA Oncall', @job_id = @jobId OUTPUT
+IF (@@ERROR <> 0 OR @ReturnCode <> 0) GOTO QuitWithRollback
+/****** Object:  Step [Space Allocation warning] ******/
+EXEC @ReturnCode = msdb.dbo.sp_add_jobstep @job_id=@jobId, @step_name=N'Space Allocation warning', 
+		@step_id=1, 
+		@cmdexec_success_code=0, 
+		@on_success_action=1, 
+		@on_success_step_id=0, 
+		@on_fail_action=2, 
+		@on_fail_step_id=0, 
+		@retry_attempts=0, 
+		@retry_interval=0, 
+		@os_run_priority=0, @subsystem=N'TSQL', 
+		@command=N'DECLARE @hr int
+DECLARE @fso int
+DECLARE @rc int
+DECLARE @drive char(1)
+DECLARE @odrive int
+DECLARE @TotalSize varchar(20)
+DECLARE @MB bigint
+DECLARE @BackupDrive char(1) ; 
+
+SET @MB = 1048576
+
+SET @backupdrive = cast((SELECT top(1) substring(physical_device_name,1,1) FROM msdb.dbo.backupmediafamily) as char(1))
+
+CREATE TABLE #drives (drive char(1) PRIMARY KEY,
+FreeSpace int NULL,
+TotalSize int NULL)
+
+INSERT #drives(drive,FreeSpace)
+EXEC master.dbo.xp_fixeddrives
+EXEC @hr=sp_OACreate ''Scripting.FileSystemObject'',@fso OUT
+IF @hr <> 0 EXEC sp_OAGetErrorInfo @fso
+
+
+
+DECLARE dcur CURSOR LOCAL FAST_FORWARD
+FOR SELECT drive from #drives
+WHERE drive not in (''C'',@BackupDrive)
+ORDER by drive
+
+OPEN dcur
+
+FETCH NEXT FROM dcur INTO @drive
+
+WHILE @@FETCH_STATUS=0
+BEGIN
+
+	EXEC @hr = sp_OAMethod @fso,''GetDrive'', @odrive OUT, @drive
+	IF @hr <> 0 EXEC sp_OAGetErrorInfo @fso
+
+	EXEC @hr = sp_OAGetProperty @odrive,''TotalSize'', @TotalSize OUT
+	IF @hr <> 0 EXEC sp_OAGetErrorInfo @odrive
+
+	UPDATE #drives
+	SET TotalSize=@TotalSize/@MB
+	WHERE drive=@drive
+	FETCH NEXT FROM dcur INTO @drive
+END
+
+CLOSE dcur
+DEALLOCATE dcur
+
+EXEC @hr=sp_OADestroy @fso
+IF @hr <> 0 EXEC sp_OAGetErrorInfo @fso
+
+SELECT @@servername as ServerName, drive,
+FreeSpace as ''Free(MB)'',
+TotalSize as ''Total(MB)'',
+CAST((FreeSpace/(TotalSize*1.0))*100.0 as int) as ''Free(%)'',
+GETDATE() as Date_Entered
+INTO #result_set
+FROM #drives
+
+DECLARE @servername nvarchar(100), @drive1 nvarchar(2), @freeMB int, @totalMB int, @free int, @date_entered nvarchar(50)
+		
+DECLARE db_crsr_T cursor for
+	SELECT [ServerName], [drive], [Free(MB)], [Total(MB)], [Free(%)], [Date_Entered] from #result_set
+
+OPEN db_crsr_T
+
+FETCH NEXT FROM db_crsr_T INTO @servername, @drive1, @FreeMB, @totalMB, @free, @date_entered
+WHILE @@fetch_status = 0
+BEGIN	
+
+	IF @free < 10
+
+	    BEGIN
+	    DECLARE @msg2 NVARCHAR(500)
+	
+	    SET @msg2 = ''WARNING - Instance '' + RTRIM(@servername) + '' has exceeded the free space threshold of 90%.  '' + ''Disk '' + CONVERT(CHAR(1),@drive1) + '': has a total size of '' + LTRIM(CONVERT(NVARCHAR(10),@totalMB)) + '' MB with '' + CONVERT(NVARCHAR(9),@freeMB) + '' free space ('' + CONVERT(NVARCHAR(3),@free) + ''%).  You will continue receiving this warning until the free space threshold has been reduced below 90%.''
+	
+	    EXEC @rc = msdb.dbo.sp_send_dbmail
+	                 @profile_name = ''SQL Mail Profile'',	
+	                 @recipients = '''',
+	                 @importance = ''high'',
+	                 @subject = ''SQL Server Disk Space Warning'',
+	                 @body_format = ''html'',
+	                 @body = @msg2,
+	                 @exclude_query_output = 1
+	            IF @rc = 1 RAISERROR(''sp_send_dbmail Failed'', 16, 1)
+	     END		
+
+	FETCH NEXT FROM db_crsr_T INTO @servername, @drive1, @FreeMB, @totalMB, @free, @date_entered
+
+END
+
+CLOSE db_crsr_T
+DEALLOCATE db_crsr_T
+
+
+DROP TABLE #drives
+DROP TABLE #result_set
+', 
+		@database_name=N'master', 
+		@flags=0
+IF (@@ERROR <> 0 OR @ReturnCode <> 0) GOTO QuitWithRollback
+EXEC @ReturnCode = msdb.dbo.sp_update_job @job_id = @jobId, @start_step_id = 1
+IF (@@ERROR <> 0 OR @ReturnCode <> 0) GOTO QuitWithRollback
+EXEC @ReturnCode = msdb.dbo.sp_add_jobschedule @job_id=@jobId, @name=N'Daily Space Verification', 
+		@enabled=1, 
+		@freq_type=4, 
+		@freq_interval=1, 
+		@freq_subday_type=1, 
+		@freq_subday_interval=0, 
+		@freq_relative_interval=0, 
+		@freq_recurrence_factor=0, 
+		@active_start_date=20120823, 
+		@active_end_date=99991231, 
+		@active_start_time=73000, 
+		@active_end_time=235959, 
+		@schedule_uid=N'f077b4bd-2e02-4314-8819-95844c196ed4'
+IF (@@ERROR <> 0 OR @ReturnCode <> 0) GOTO QuitWithRollback
+EXEC @ReturnCode = msdb.dbo.sp_add_jobserver @job_id = @jobId, @server_name = N'(local)'
+IF (@@ERROR <> 0 OR @ReturnCode <> 0) GOTO QuitWithRollback
+COMMIT TRANSACTION
+GOTO EndSave
+QuitWithRollback:
+    IF (@@TRANCOUNT > 0) ROLLBACK TRANSACTION
+EndSave:
+GO
+
+
+USE [msdb]
+GO
