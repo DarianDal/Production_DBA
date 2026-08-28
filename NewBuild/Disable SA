@@ -1,0 +1,11 @@
+-----------------------------------------------------------
+--  SA account
+--  This process disables the SA account --  
+-------------------------------------------------------------
+
+USE [MASTER]
+GO
+
+ALTER LOGIN [sa] DISABLE
+
+GO
