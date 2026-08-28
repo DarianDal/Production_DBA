@@ -1,0 +1,42 @@
+--Script that writes a RESTORE DATABASE statement for all databases on a server 
+
+/*Update the MSSQL version and the restore path as necessary*/
+
+
+
+DECLARE @command NVARCHAR(MAX);
+
+-- The '?' acts as a placeholder for the database name
+SET @command = '
+USE [?];
+IF DB_NAME() NOT IN (''master'', ''model'', ''msdb'', ''tempdb'')
+BEGIN
+    DECLARE @DataLogicName NVARCHAR(255), @LogLogicName NVARCHAR(255);
+	DECLARE @AppendTodaysDate NVARCHAR(25);
+	DECLARE @CompatibilityLevel INT;
+    DECLARE @TODAYSDATE DATE = GETDATE();
+    
+    -- Retrieve the logical names for the primary data and log files
+    SELECT @DataLogicName = name FROM sys.database_files WHERE type = 0;
+    SELECT @LogLogicName = name FROM sys.database_files WHERE type = 1;
+    
+	SET @CompatibilityLevel = CAST(LEFT(CAST(SERVERPROPERTY(''ProductVersion'') AS NVARCHAR(25)), 
+                              CHARINDEX(''.'', CAST(SERVERPROPERTY(''ProductVersion'') AS NVARCHAR(25))) - 1) AS INT) * 10;
+	SET @AppendTodaysDate = REPLACE(CONVERT(NVARCHAR(25), @TODAYSDATE, 110), ''-'', '''');
+
+    print 
+''
+USE [master]
+RESTORE DATABASE [?] 
+FROM  DISK = N''''\\Source\?_'' + @AppendTodaysDate + ''.bak'''' WITH  FILE = 1,  
+MOVE N'''''' + @DataLogicName + '''''' TO N''''D:\Microsoft SQL Server\MSSQL16.MSSQLSERVER\MSSQL\DATA\?.mdf'''',  
+MOVE N'''''' + @LogLogicName + '''''' TO N''''L:\Microsoft SQL Server\MSSQL16.MSSQLSERVER\MSSQL\Log\?_log.ldf'''',  
+NOUNLOAD,  
+REPLACE,  
+STATS = 5
+GO
+''
+
+END';
+
+EXEC sp_MSforeachdb @command;
