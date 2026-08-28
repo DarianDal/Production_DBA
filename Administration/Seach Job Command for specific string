@@ -1,0 +1,16 @@
+--Search for a specific string in all job steps of all jobs on the server
+USE msdb;
+GO
+
+SELECT 
+    j.name AS [JobName], 
+    s.step_id AS [StepID],
+    s.step_name AS [StepName],
+    s.command AS [Command]
+FROM 
+    dbo.sysjobs AS j
+INNER JOIN 
+    dbo.sysjobsteps AS s ON j.job_id = s.job_id
+WHERE 
+    s.command LIKE '%YourSearchText%';
+GO
