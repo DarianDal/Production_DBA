@@ -1,0 +1,116 @@
+-------------------------------------------------------------
+--  Database Mail Simple Configuration Template.
+--
+--  This template creates a Database Mail profile, an SMTP account and 
+--  associates the account to the profile.
+--  The template does not grant access to the new profile for
+--  any database principals.  Use msdb.dbo.sysmail_add_principalprofile
+--  to grant access to the new profile for users who are not
+--  members of sysadmin.
+-------------------------------------------------------------
+DECLARE @profile_name sysname,
+        @account_name sysname,
+        @SMTP_servername sysname,
+        @email_address NVARCHAR(128),
+        @replyto_address NVARCHAR(128),
+		    @description NVARCHAR(128),
+    	  @display_name NVARCHAR(128);
+
+-- Profile name. Replace with the name for your profile
+    SET @profile_name = 'SQL Mail Profile';
+
+-- Account information. Replace with the information for your account.
+
+		SET @account_name = 'SQL DBA Email Account';
+		SET @SMTP_servername = '';
+		SET @email_address = '';
+    SET @display_name = 'SQL Server';
+		SET @replyto_address = '';
+		SET @description = 'Email account for SQL Server';
+
+-- Verify the specified account and profile do not already exist.
+IF EXISTS (SELECT * FROM msdb.dbo.sysmail_profile WHERE name = @profile_name)
+BEGIN
+  RAISERROR('The specified Database Mail profile (SQL Mail Profile) already exists.', 16, 1);
+  GOTO done;
+END;
+
+IF EXISTS (SELECT * FROM msdb.dbo.sysmail_account WHERE name = @account_name )
+BEGIN
+ RAISERROR('The specified Database Mail account (SQL DBA Email Account) already exists.', 16, 1) ;
+ GOTO done;
+END;
+
+
+-- Start a transaction before adding the account and the profile
+BEGIN TRANSACTION ;
+
+DECLARE @rv INT;
+
+-- Add the account
+EXECUTE @rv=msdb.dbo.sysmail_add_account_sp
+    @account_name = @account_name,
+    @email_address = @email_address,
+    @display_name = @display_name,
+    @mailserver_name = @SMTP_servername,
+  	@description = @description,
+  	@replyto_address = @replyto_address;
+
+IF @rv<>0
+BEGIN
+    RAISERROR('Failed to create the specified Database Mail account (SQL DBA Email Account).', 16, 1) ;
+    GOTO done;
+END
+
+  -- Add the profile
+EXECUTE @rv=msdb.dbo.sysmail_add_profile_sp
+    @profile_name = @profile_name ;
+
+IF @rv<>0
+BEGIN
+    RAISERROR('Failed to create the specified Database Mail profile (SQL Mail Profile).', 16, 1);
+	ROLLBACK TRANSACTION;
+    GOTO done;
+END;
+
+-- Associate the account with the profile.
+EXECUTE @rv=msdb.dbo.sysmail_add_profileaccount_sp
+    @profile_name = @profile_name,
+    @account_name = @account_name,
+    @sequence_number = 1 ;
+
+IF @rv<>0
+BEGIN
+    RAISERROR('Failed to associate the speficied profile with the specified account (SQL DBA Email Account).', 16, 1) ;
+	ROLLBACK TRANSACTION;
+    GOTO done;
+END;
+
+COMMIT TRANSACTION;
+
+done:
+
+GO
+
+------------------------------------------------------------
+--  Operator
+--
+--  This process creates On-Call Operator
+-------------------------------------------------------------
+USE [msdb]
+GO
+
+/****** Object:  Operator [DBA Oncall]    Script Date: 5/16/2019 8:16:27 AM ******/
+EXEC msdb.dbo.sp_add_operator @name=N'SQL DBA Oncall', 
+		@enabled=1, 
+		@weekday_pager_start_time=0, 
+		@weekday_pager_end_time=235959, 
+		@saturday_pager_start_time=0, 
+		@saturday_pager_end_time=235959, 
+		@sunday_pager_start_time=0, 
+		@sunday_pager_end_time=235959, 
+		@pager_days=127, 
+		@email_address=N'', 
+		@pager_address=N'', 
+		@category_name=N'[Uncategorized]'
+GO
