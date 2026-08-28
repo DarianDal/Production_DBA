@@ -1,0 +1,35 @@
+--==========================================================
+-- Server Memory
+--==========================================================
+DECLARE @ram NVARCHAR(6)
+SELECT @ram = total_physical_memory_kb/1024/1024  from sys.dm_os_sys_memory
+SELECT @ram =
+	CASE @ram
+		WHEN '64' THEN '59000'
+		WHEN '63' THEN '59000'
+		WHEN '48' THEN '45000'
+		WHEN '47' THEN '45000'
+		WHEN '32' THEN '30000'
+		WHEN '31' THEN '30000'
+		WHEN '24' THEN '22400'
+		WHEN '23' THEN '22400'
+		WHEN '16' THEN '14500'
+		WHEN '15' THEN '14500'
+		WHEN '12' THEN '10600'
+		WHEN '11' THEN '10600'
+		WHEN '8' THEN '6700'
+		WHEN '7' THEN '6700'
+		WHEN '4' THEN '3200'
+		WHEN '3' THEN '3200'
+		WHEN '2' THEN '1500'
+		WHEN '1' THEN '1500'
+		ELSE '14500'
+	END
+EXEC sys.sp_configure N'max server memory (MB)', @ram;
+GO
+
+EXEC sp_configure 'min server memory', 512;
+GO
+
+EXEC sp_configure 'cost threshold for parallelism', 50 ;  
+GO  
