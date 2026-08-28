@@ -1,0 +1,18 @@
+--This Query shows you all the threads currently established and their state
+
+SELECT  spid,
+        sp.[status],
+        loginame [Login],
+        hostname, 
+        blocked BlkBy,
+        sd.name DBName, 
+        cmd Command,
+        cpu CPUTime,
+        physical_io DiskIO,
+        login_time,
+        last_batch LastBatch,
+        [program_name] ProgramName   
+FROM master.dbo.sysprocesses sp 
+JOIN master.dbo.sysdatabases sd ON sp.dbid = sd.dbid
+where sp.loginame <> 'sa' and sd.name NOT IN ('master', 'msdb', 'tempdb')
+ORDER BY dbname    --sd.name
