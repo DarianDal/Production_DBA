@@ -1,0 +1,4 @@
+--Query to find out where a user is gaining access via AD groups in SQL Server
+
+EXEC master..xp_logininfo @acctname = 'DOMAIN\username', @option = 'all';
+GO
