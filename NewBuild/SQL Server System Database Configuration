@@ -1,0 +1,58 @@
+-----------------------------------------------------------
+--  System Datbase Alters
+--
+--  This process creates the alters the system databases
+--  for Autogrowtn and initial Sizes on MSDB and MODEL.
+-------------------------------------------------------------
+
+USE MASTER
+
+ALTER DATABASE [MODEL]    
+  MODIFY FILE
+ (
+   NAME = [modeldev],
+   SIZE = 256,
+   FILEGROWTH = 128)
+ 
+ GO
+
+ ALTER DATABASE [MODEL]    
+  MODIFY FILE
+ (
+   NAME = [modellog],
+   SIZE = 128,
+   FILEGROWTH = 128)
+
+GO
+  
+ALTER DATABASE [MODEL] SET RECOVERY FULL
+
+GO
+
+USE [MASTER]
+
+ALTER DATABASE [MSDB]    
+  MODIFY FILE
+ (
+   NAME = [MSDBData],
+   SIZE = 256,
+   FILEGROWTH = 128)
+ 
+ GO
+
+ ALTER DATABASE [MSDB]    
+  MODIFY FILE
+ (
+   NAME = [MSDBLog],
+   SIZE = 128,
+   FILEGROWTH = 128)
+
+GO
+
+ALTER DATABASE [MSDB] SET RECOVERY FULL
+
+GO
+
+USE [msdb] 
+
+GO
