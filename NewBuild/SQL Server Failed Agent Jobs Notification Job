@@ -1,0 +1,125 @@
+/****** Object:  Job [SQL Server Schedule Notification] ******/
+BEGIN TRANSACTION
+DECLARE @ReturnCode INT
+SELECT @ReturnCode = 0
+/****** Object:  JobCategory [[Uncategorized (Local)]] ******/
+IF NOT EXISTS (SELECT name FROM msdb.dbo.syscategories WHERE name=N'[Uncategorized (Local)]' AND category_class=1)
+BEGIN
+EXEC @ReturnCode = msdb.dbo.sp_add_category @class=N'JOB', @type=N'LOCAL', @name=N'[Uncategorized (Local)]'
+IF (@@ERROR <> 0 OR @ReturnCode <> 0) GOTO QuitWithRollback
+
+END
+
+DECLARE @jobId BINARY(16)
+EXEC @ReturnCode =  msdb.dbo.sp_add_job @job_name=N'SQL Server Schedule Notification', 
+		@enabled=1, 
+		@notify_level_eventlog=0, 
+		@notify_level_email=2, 
+		@notify_level_netsend=0, 
+		@notify_level_page=0, 
+		@delete_level=0, 
+		@description=N'Job the will list and email the schedule run for the last 24 hrs.', 
+		@category_name=N'[Uncategorized (Local)]', 
+		@owner_login_name=N'sa', 
+		@notify_email_operator_name=N'SQL DBA Oncall', @job_id = @jobId OUTPUT
+IF (@@ERROR <> 0 OR @ReturnCode <> 0) GOTO QuitWithRollback
+/****** Object:  Step [Schedule Email.] ******/
+EXEC @ReturnCode = msdb.dbo.sp_add_jobstep @job_id=@jobId, @step_name=N'Schedule Email.', 
+		@step_id=1, 
+		@cmdexec_success_code=0, 
+		@on_success_action=1, 
+		@on_success_step_id=0, 
+		@on_fail_action=2, 
+		@on_fail_step_id=0, 
+		@retry_attempts=0, 
+		@retry_interval=0, 
+		@os_run_priority=0, @subsystem=N'TSQL', 
+		@command=N'DECLARE @xml NVARCHAR(MAX)
+	DECLARE @body NVARCHAR(MAX)
+	SET @xml =CAST(( SELECT
+			-- status
+			''Failed'' AS ''td''
+			,'''' -- formatting spacer
+			-- last run date
+			,cast(dateadd(ss,cast(substring(cast(jh.run_duration + 1000000 as char(7)),6,2) as int),
+             dateadd(mi, cast(substring(cast(jh.run_duration + 1000000 as char(7)),4,2) as int),
+             dateadd(hh, cast(substring(cast(jh.run_duration + 1000000 as char(7)),2,2) as int),
+             dateadd(ss, cast(substring(cast(jh.run_time + 1000000 as char(7)),6,2) as int),
+             dateadd(mi, cast(substring(cast(jh.run_time + 1000000 as char(7)),4,2) as int),
+             dateadd(hh, cast(substring(cast(jh.run_time + 1000000 as char(7)),2,2) as int),
+             convert(datetime,cast (run_date as char(8))))
+             ))))) as char(19)) as ''td''
+			,'''' -- formatting spacer
+			-- job name
+			,LTRIM(RTRIM(j.[name])) AS ''td'' 
+			FROM msdb..sysjobhistory jh
+			INNER JOIN msdb..sysjobs j
+			ON j.job_id = jh.job_id
+			-- build up date by addition, to return all jobs from previous 24 hours
+			-- get year from yesterday''s date then multiply by 1000 (e.g. 2008000)
+			WHERE run_date >= DATEPART(YEAR, GETDATE()-1)*10000+
+			-- get month number and multiply by 100 (0400) add to year (20080400)
+			DATEPART(MONTH, GETDATE()-1)*100+
+			-- get day number (27) and add to year-month (20080427)
+			DATEPART(DAY, GETDATE()-1) -- change this value to see earlier records
+			AND step_id = 0
+			AND jh.run_status <> 1
+			ORDER BY 
+			 jh.run_date
+                                                ,[name]
+			,jh.run_time			
+	FOR XML PATH(''tr''), ELEMENTS ) AS NVARCHAR(MAX))
+
+	-- highlight any failed jobs with red background
+	SELECT @xml = REPLACE(@xml,''<td>Failed</td>'',''<td bgcolor=#ff3333>Failed</td>'')
+	
+	-- get name of SQL Server
+	DECLARE @server VARCHAR(50)
+	SELECT @server = [server] + '' - Failed Jobs'' FROM msdb..sysjobhistory
+
+	SET @body =''<html><Font="Verdana" size=1><table bgcolor="white" border = 1><tr bgcolor="silver"><th>Last Run Status</th><th>Last Run Date</th><th>Job Name</th></tr>'' 
+	SET @body = @body + @xml +''</table></body></html>''
+	
+    IF @body <> ''''
+    BEGIN
+	     EXEC msdb.dbo.sp_send_dbmail               
+      @recipients =N'''' 
+	    ,@body = @body
+	    ,@body_format =''HTML''
+	    ,@subject = @server 
+	    ,@profile_name =''SQL Mail Profile''
+    END
+
+
+', 
+		@database_name=N'msdb', 
+		@flags=0
+IF (@@ERROR <> 0 OR @ReturnCode <> 0) GOTO QuitWithRollback
+EXEC @ReturnCode = msdb.dbo.sp_update_job @job_id = @jobId, @start_step_id = 1
+IF (@@ERROR <> 0 OR @ReturnCode <> 0) GOTO QuitWithRollback
+EXEC @ReturnCode = msdb.dbo.sp_add_jobschedule @job_id=@jobId, @name=N'Daily Schedule Notification', 
+		@enabled=1, 
+		@freq_type=4, 
+		@freq_interval=1, 
+		@freq_subday_type=1, 
+		@freq_subday_interval=0, 
+		@freq_relative_interval=0, 
+		@freq_recurrence_factor=0, 
+		@active_start_date=20120621, 
+		@active_end_date=99991231, 
+		@active_start_time=73000, 
+		@active_end_time=235959, 
+		@schedule_uid=N'3e263169-9880-4f3f-9bc9-d9c7deaedf40'
+IF (@@ERROR <> 0 OR @ReturnCode <> 0) GOTO QuitWithRollback
+EXEC @ReturnCode = msdb.dbo.sp_add_jobserver @job_id = @jobId, @server_name = N'(local)'
+IF (@@ERROR <> 0 OR @ReturnCode <> 0) GOTO QuitWithRollback
+COMMIT TRANSACTION
+GOTO EndSave
+QuitWithRollback:
+    IF (@@TRANCOUNT > 0) ROLLBACK TRANSACTION
+EndSave:
+GO
+
+
+USE [msdb]
+GO
