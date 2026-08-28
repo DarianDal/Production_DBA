@@ -1,0 +1,32 @@
+--==========================================================
+-- Advanced Server Properties
+--==========================================================
+DECLARE @numCores nvarchar(2);
+SELECT @numCores = cpu_count FROM sys.dm_os_sys_info
+SELECT @numCores =
+	CASE @numCores
+		WHEN '2' THEN '0'
+		WHEN '4' THEN '2'
+		WHEN '6' THEN '3'
+		WHEN '8' THEN '4'
+		WHEN '12' THEN '6'
+		WHEN '16' THEN '8'
+		WHEN '18' THEN '9'
+		WHEN '20' THEN '10'
+		WHEN '24' THEN '12'
+		ELSE '0'
+	END
+EXEC sys.sp_configure N'max degree of parallelism', @numCores;
+GO
+
+EXEC sp_configure 'backup compression default', 1 ;  
+GO
+
+EXEC sp_configure 'Database Mail XPs',1;
+GO
+
+EXEC sp_configure 'Ole Automation Procedures', 1;  
+GO
+
+RECONFIGURE  
+GO  
