@@ -1,0 +1,26 @@
+-----------------------------------------------------------
+--  Agent Properties 
+--
+--  This process sets the agent properties 
+--     1. Job History 
+--     2. Mail Alert and Failsafe operator
+-------------------------------------------------------------
+
+EXEC msdb.dbo.sp_set_sqlagent_properties
+
+@jobhistory_max_rows=10000,
+
+@jobhistory_max_rows_per_job = 1000
+
+GO
+
+USE [msdb]
+
+GO
+EXEC master.dbo.sp_MSsetalertinfo @failsafeoperator=N'SQL DBA Oncall', 
+		@notificationmethod=1
+GO
+EXEC msdb.dbo.sp_set_sqlagent_properties @email_save_in_sent_folder=0,
+        @databasemail_profile=N'SQL Mail Profile', 
+		@use_databasemail=1
+GO
