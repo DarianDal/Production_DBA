@@ -1,0 +1,87 @@
+/****** Object:  Job [SQL Server Restart Notification] ******/
+BEGIN TRANSACTION
+DECLARE @ReturnCode INT
+SELECT @ReturnCode = 0
+/****** Object:  JobCategory [[Uncategorized (Local)]] ******/
+IF NOT EXISTS (SELECT name FROM msdb.dbo.syscategories WHERE name=N'[Uncategorized (Local)]' AND category_class=1)
+BEGIN
+EXEC @ReturnCode = msdb.dbo.sp_add_category @class=N'JOB', @type=N'LOCAL', @name=N'[Uncategorized (Local)]'
+IF (@@ERROR <> 0 OR @ReturnCode <> 0) GOTO QuitWithRollback
+
+END
+
+DECLARE @jobId BINARY(16)
+EXEC @ReturnCode =  msdb.dbo.sp_add_job @job_name=N'SQL Server Restart Notification', 
+		@enabled=1, 
+		@notify_level_eventlog=2, 
+		@notify_level_email=2, 
+		@notify_level_netsend=0, 
+		@notify_level_page=0, 
+		@delete_level=0, 
+		@description=N'SQL Server Restart Notification', 
+		@category_name=N'[Uncategorized (Local)]', 
+		@owner_login_name=N'sa', 
+		@notify_email_operator_name=N'SQL DBA Oncall', @job_id = @jobId OUTPUT
+IF (@@ERROR <> 0 OR @ReturnCode <> 0) GOTO QuitWithRollback
+/****** Object:  Step [SQL Server Restart Notification] ******/
+EXEC @ReturnCode = msdb.dbo.sp_add_jobstep @job_id=@jobId, @step_name=N'SQL Server Restart Notification', 
+		@step_id=1, 
+		@cmdexec_success_code=0, 
+		@on_success_action=1, 
+		@on_success_step_id=0, 
+		@on_fail_action=2, 
+		@on_fail_step_id=0, 
+		@retry_attempts=0, 
+		@retry_interval=1, 
+		@os_run_priority=0, @subsystem=N'TSQL', 
+		@command=N'DECLARE @UpTimeDays int
+DECLARE @SQLServerStarted varchar(20)
+DECLARE @rc int
+DECLARE @msg varchar(1000)
+
+SET @UpTimeDays = (select DateDiff(D, CrDate, GetDate()) from master..SysDatabases where name = ''TempDb'')
+IF @UpTimeDays = 0
+BEGIN
+    SET @SQLServerStarted = (select convert(varchar(20), CrDate, 113) from master..SysDatabases where name = ''TempDb'')
+    SET @msg = ''The SQL Server <b>'' + @@SERVERNAME + ''</b> was restarted on <b>'' + @SQLServerStarted + ''</b>''
+    EXEC @rc = msdb.dbo.sp_send_dbmail
+        @profile_name = ''SQL Mail Profile'',
+        @recipients = '''',
+        @importance = ''high'',
+        @subject = ''SQL Server Restart Notification'',
+        @body_format = ''html'',
+        @body = @msg,
+        @exclude_query_output = 1
+    IF @rc = 1 RAISERROR(''sp_send_dbmail Failed'', 16, 1)
+END
+', 
+		@database_name=N'master', 
+		@flags=0
+IF (@@ERROR <> 0 OR @ReturnCode <> 0) GOTO QuitWithRollback
+EXEC @ReturnCode = msdb.dbo.sp_update_job @job_id = @jobId, @start_step_id = 1
+IF (@@ERROR <> 0 OR @ReturnCode <> 0) GOTO QuitWithRollback
+EXEC @ReturnCode = msdb.dbo.sp_add_jobschedule @job_id=@jobId, @name=N'Schedule', 
+		@enabled=1, 
+		@freq_type=64, 
+		@freq_interval=0, 
+		@freq_subday_type=0, 
+		@freq_subday_interval=0, 
+		@freq_relative_interval=0, 
+		@freq_recurrence_factor=0, 
+		@active_start_date=20090402, 
+		@active_end_date=99991231, 
+		@active_start_time=0, 
+		@active_end_time=235959, 
+		@schedule_uid=N'e5a3ebc2-8bce-4885-bb8a-04069a873fd8'
+IF (@@ERROR <> 0 OR @ReturnCode <> 0) GOTO QuitWithRollback
+EXEC @ReturnCode = msdb.dbo.sp_add_jobserver @job_id = @jobId, @server_name = N'(local)'
+IF (@@ERROR <> 0 OR @ReturnCode <> 0) GOTO QuitWithRollback
+COMMIT TRANSACTION
+GOTO EndSave
+QuitWithRollback:
+    IF (@@TRANCOUNT > 0) ROLLBACK TRANSACTION
+EndSave:
+GO
+
+USE [msdb]
+GO
